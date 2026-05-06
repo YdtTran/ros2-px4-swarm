@@ -166,7 +166,18 @@ docker exec -it px4_swarm_jazzy bash
 
 ## 🛸 Chạy Mô phỏng Bầy đàn 3 UAV (demo1)
 
-Thực hiện **bên trong container**:
+### Bước 1: Khởi động QGroundControl (trên máy thật)
+
+Mở terminal mới trên máy thật và chạy:
+
+```bash
+cd ~/ENV
+./QGroundControl.AppImage
+```
+
+Để QGC ở trạng thái chờ kết nối — nó sẽ **tự động phát hiện UAV** khi simulation khởi động xong.
+
+### Bước 2: Khởi động simulation (bên trong container)
 
 ```bash
 cd /workspace/ros2_ws/src/demo1
@@ -189,13 +200,19 @@ Script tự động thực hiện theo thứ tự:
 
 Khi thấy `✅ Bầy đàn 3 UAV đã sẵn sàng!` là hệ thống hoạt động.
 
-### Kết nối QGroundControl
+### Bước 3: Kiểm tra kết nối
 
-Mở QGC trên máy thật — nhờ `network_mode: host`, QGC **tự động phát hiện cả 3 UAV** qua MAVLink broadcast, không cần cấu hình thêm.
+Trên QGC, bạn sẽ thấy **3 vehicle xuất hiện tự động** trên bản đồ Baylands (San Francisco Bay Area). Panel **Multi Vehicle Selection** ở góc phải cho phép chọn và điều khiển đồng thời cả bầy đàn.
 
-> **EKF2 cần ~30-60 giây** để hội tụ sau khi khởi động. Cảnh báo `heading estimate invalid` sẽ tự hết.
+> **EKF2 cần ~30-60 giây** để hội tụ sau khi khởi động. Cảnh báo `heading estimate invalid` sẽ tự hết — chờ đến khi status chuyển sang **Ready To Fly**.
 
-### Dừng mô phỏng
+### Kết quả
+
+[![3 UAV Swarm trên Baylands](docs/result_3_uav.png)](docs/result_3_uav.png)
+
+*Gazebo (trái): 3 UAV x500 spawn trên map Baylands. QGroundControl (phải): 3 vehicle kết nối tự động, sẵn sàng cất cánh.*
+
+### Bước 4: Dừng mô phỏng
 
 Nhấn `Ctrl+C` trong terminal đang chạy script. Script tự dọn dẹp toàn bộ tiến trình PX4, Gazebo và Agent.
 
