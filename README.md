@@ -8,27 +8,50 @@ Kiến trúc Docker giúp loại bỏ hoàn toàn các lỗi xung đột môi tr
 
 [![Kiến trúc Hệ thống Bầy đàn UAV](docs/architecture.png)](https://hcmut-lab.github.io/ros2-px4-swarm/docs/architecture.html)
 
-*(Lưu ý: Click trực tiếp vào sơ đồ bên trên hoặc [vào đây](https://hcmut-lab.github.io/ros2-px4-swarm/docs/architecture.html) để xem bản tương tác với hiệu ứng luồng dữ liệu).*
-
-## ⚠️ Yêu cầu Hệ thống (Prerequisites)
-
-*   **Hệ điều hành:** Ubuntu 24.04 LTS.
-*   **Môi trường hiển thị:** Bắt buộc sử dụng **X11** (Không dùng Wayland).
-
-> **Cách chuyển Wayland sang X11 trên Ubuntu 24.04:**
-> 1. Mở terminal, gõ: `sudo nano /etc/gdm3/custom.conf`
-> 2. Tìm dòng `#WaylandEnable=false` và bỏ dấu thăng để thành `WaylandEnable=false`.
-> 3. Lưu file (Ctrl+O, Enter, Ctrl+X) và khởi động lại máy tính (`reboot`).
-> 4. Kiểm tra lại bằng lệnh: `echo $XDG_SESSION_TYPE`. Nếu kết quả in ra `x11` là thành công.
+*(Click vào sơ đồ hoặc [vào đây](https://hcmut-lab.github.io/ros2-px4-swarm/docs/architecture.html) để xem bản tương tác.)*
 
 ---
 
-## 🚀 Hướng dẫn Cài đặt (Step-by-Step)
+## ⚠️ Yêu cầu Hệ thống (Prerequisites)
 
-### Bước 1: Cài đặt Docker Engine
-Nếu máy bạn chưa có Docker, hãy chạy chuỗi lệnh sau để cài đặt và cấp quyền:
+- **Hệ điều hành:** Ubuntu 24.04 LTS
+- **Môi trường hiển thị:** Bắt buộc dùng **X11** (không dùng Wayland)
+
+> **Chuyển Wayland sang X11:**
+> 1. `sudo nano /etc/gdm3/custom.conf`
+> 2. Bỏ dấu `#` ở dòng `#WaylandEnable=false`
+> 3. Lưu và `reboot`
+> 4. Kiểm tra: `echo $XDG_SESSION_TYPE` → phải ra `x11`
+
+---
+
+## 🚀 Hướng dẫn Cài đặt (Lần đầu)
+
+### Bước 1: Cài đặt QGroundControl (trên máy thật)
+
 ```bash
-# Cài đặt Docker
+# Cài thư viện cần thiết
+sudo usermod -a -G dialout $USER
+sudo apt-get remove modemmanager -y
+sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
+sudo apt install libfuse2 libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
+```
+
+> ⚠️ **Đăng xuất và đăng nhập lại** để quyền `dialout` có hiệu lực.
+
+```bash
+# Tải QGC v5.0.8
+mkdir -p ~/ENV && cd ~/ENV
+wget -O QGroundControl.AppImage \
+    https://github.com/mavlink/qgroundcontrol/releases/download/v5.0.8/QGroundControl-x86_64.AppImage
+chmod +x ./QGroundControl.AppImage
+```
+
+---
+
+### Bước 2: Cài đặt Docker Engine
+
+```bash
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -41,146 +64,183 @@ echo \
 sudo apt-get update
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# Cấp quyền cho user (Không cần gõ sudo khi dùng docker)
+# Cấp quyền user (không cần sudo khi dùng docker)
 sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-### Bước 2: Khởi tạo Cấu trúc Dự án
-Tạo không gian làm việc (Workspace) tại thư mục Home của bạn:
+---
+
+### Bước 3: Tạo Workspace và lấy code
+
 ```bash
 mkdir -p ~/ros2_ws/src
 cd ~/ros2_ws
+
+# Clone repo vào thư mục src
+git clone https://github.com/hcmut-lab/ros2-px4-swarm.git src/demo1
 ```
 
 Tạo file `Dockerfile` tại `~/ros2_ws/Dockerfile`:
+
 ```dockerfile
 FROM osrf/ros:jazzy-desktop-full
 
-# Cài đặt các thư viện cơ bản
 RUN apt-get update && apt-get install -y \
     git cmake build-essential wget curl nano python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/env
 
-# 1. Cài đặt Micro-XRCE-DDS-Agent
+# 1. Micro-XRCE-DDS-Agent
 RUN git clone -b v2.4.3 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git \
     && cd Micro-XRCE-DDS-Agent && mkdir build && cd build \
     && cmake .. && make -j$(nproc) && make install && ldconfig /usr/local/lib/
 
-# 2. Cài đặt PX4-Autopilot (Hỗ trợ SITL & Gazebo Harmonic)
+# 2. PX4-Autopilot + Gazebo Harmonic
+# Bỏ --no-sim-tools để Gazebo được cài → gz_bridge được build
 RUN git clone https://github.com/PX4/PX4-Autopilot.git --recursive
-RUN bash PX4-Autopilot/Tools/setup/ubuntu.sh --no-nuttx --no-sim-tools
+RUN bash PX4-Autopilot/Tools/setup/ubuntu.sh --no-nuttx
 RUN cd PX4-Autopilot && make px4_sitl_default
 
-# Thiết lập Workspace của dự án là thư mục mặc định
 WORKDIR /workspace/ros2_ws
 RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
 ```
 
 Tạo file `docker-compose.yml` tại `~/ros2_ws/docker-compose.yml`:
+
 ```yaml
 services:
   swarm_env:
     build: .
     container_name: px4_swarm_jazzy
-    network_mode: "host"       # Chia sẻ mạng lưới DDS với host
+    network_mode: "host"
     privileged: true
-    ipc: host                  # Tối ưu hóa bộ nhớ chia sẻ cho GUI
+    ipc: host
     environment:
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - LIBGL_ALWAYS_SOFTWARE=1 # Ép dùng CPU để render 3D (Cho máy không có card rời)
     volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw # Cấp quyền hiển thị đồ họa
-      - .:/workspace/ros2_ws             # Đồng bộ mã nguồn theo thời gian thực
-    command: tail -f /dev/null           # Giữ container chạy ngầm
-```
-
-### Bước 3: Build và Khởi động Môi trường (Docker)
-Tại thư mục `~/ros2_ws`, chạy lệnh sau để Docker tải và đóng gói môi trường. *(Lưu ý: Quá trình này có thể mất 15-20 phút trong lần chạy đầu tiên, các lần sau sẽ khởi động ngay lập tức).*
-```bash
-docker compose up -d
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/workspace/ros2_ws
+    devices:
+      - /dev/dri:/dev/dri
+    command: tail -f /dev/null
 ```
 
 ---
 
-## 🎮 Luồng Làm Việc Hàng Ngày (Daily Workflow)
+### Bước 4: Build Docker (lần đầu ~20-40 phút)
 
-Mỗi khi bạn bật máy tính lên để làm việc, chỉ cần thực hiện 2 bước cực kỳ đơn giản:
+```bash
+cd ~/ros2_ws
+docker compose up -d --build
+```
 
-**1. Cấp quyền xuất hình ảnh đồ họa (Chạy trên Terminal của máy thật):**
+> ⚠️ Quá trình build lần đầu mất **20-40 phút** vì phải compile PX4 + Gazebo Harmonic. Các lần sau chỉ cần `docker compose up -d`.
+
+---
+
+## 🎮 Luồng Làm Việc Hàng Ngày
+
+### 1. Khởi động container (trên máy thật)
+
+```bash
+cd ~/ros2_ws
+docker compose up -d
+```
+
+### 2. Cấp quyền hiển thị đồ họa (bắt buộc trước khi dùng GUI)
+
 ```bash
 xhost +local:root
 ```
 
-**2. Chui vào không gian mô phỏng của Docker:**
+### 3. Mở terminal trong container
+
 ```bash
 docker exec -it px4_swarm_jazzy bash
 ```
 
-Lúc này, terminal của bạn đã ở bên trong Docker tại đường dẫn `/workspace/ros2_ws`. Mã nguồn bạn lưu ở máy thật bằng VS Code sẽ lập tức xuất hiện tại đây.
+---
 
-**Các lệnh thông dụng bên trong Docker:**
-*   **Biên dịch code ROS 2:** 
-    `colcon build`
-*   **Cập nhật môi trường:** 
-    `source install/setup.bash`
-*   **Chạy file Launch (Ví dụ khởi tạo bầy đàn):** 
-    `ros2 launch <tên_package> <tên_file_launch.py>`
+## 🛸 Chạy Mô phỏng Bầy đàn 3 UAV (demo1)
 
-> **Mẹo hiệu năng:** Nếu máy tính (CPU) chạy Gazebo quá giật lag, hãy thêm cờ `-s` vào lệnh gọi mô phỏng để tắt giao diện 3D (chạy Headless) và chỉ theo dõi máy bay thông qua QGroundControl.
+Thực hiện **bên trong container**:
+
+```bash
+cd /workspace/ros2_ws/src/demo1
+chmod +x run_swarm.sh   # Chỉ cần chạy 1 lần đầu
+
+# Chạy headless (nhẹ hơn, theo dõi qua QGC):
+./run_swarm.sh
+
+# Hoặc mở kèm cửa sổ Gazebo 3D:
+./run_swarm.sh --gui
+```
+
+> **Lưu ý khi dùng `--gui`:** Phải chạy `xhost +local:root` trên terminal máy thật **trước** khi chạy script.
+
+Script tự động thực hiện theo thứ tự:
+1. **Micro XRCE-DDS Agent** — cầu nối PX4 ↔ ROS 2 (port `8888`)
+2. **Vá SDF** — xoá warnings không cần thiết trong model/world
+3. **Gazebo server** — môi trường vật lý 3D, map Baylands
+4. **3 UAV PX4** — spawn tuần tự tại `x = 0m, 2m, 4m`
+
+Khi thấy `✅ Bầy đàn 3 UAV đã sẵn sàng!` là hệ thống hoạt động.
+
+### Kết nối QGroundControl
+
+Mở QGC trên máy thật — nhờ `network_mode: host`, QGC **tự động phát hiện cả 3 UAV** qua MAVLink broadcast, không cần cấu hình thêm.
+
+> **EKF2 cần ~30-60 giây** để hội tụ sau khi khởi động. Cảnh báo `heading estimate invalid` sẽ tự hết.
+
+### Dừng mô phỏng
+
+Nhấn `Ctrl+C` trong terminal đang chạy script. Script tự dọn dẹp toàn bộ tiến trình PX4, Gazebo và Agent.
 
 ---
 
-## 📂 Quản lý Nhiều Dự án/Kịch bản Song song (Modular Monorepo)
+## 📂 Quản lý Nhiều Dự án (Modular Monorepo)
 
-Dự án này áp dụng kiến trúc **"1 Môi trường - N Dự án"**. Nếu bạn có nhiều kịch bản bầy đàn khác nhau (ví dụ: bay vòng tròn, giao hàng, tránh vật cản) và đều sử dụng chung nền tảng PX4 + ROS 2, bạn **KHÔNG CẦN** tạo thêm Dockerfile hay chạy nhiều container. Tất cả mã nguồn sẽ được đặt chung trong thư mục `src/` và chạy trong một container duy nhất.
+Kiến trúc **"1 Môi trường - N Dự án"**: tất cả kịch bản dùng chung 1 container.
 
-### Cấu trúc thư mục chuẩn trên máy thật:
 ```text
-~/ros2_ws/                       <-- Thư mục gốc trên máy thật
-│
-├── docker-compose.yml           <-- CHỈ 1 FILE DUY NHẤT để khởi động hệ thống
-├── Dockerfile                   <-- CHỈ 1 FILE DUY NHẤT để cài môi trường
-│
-└── src/                         <-- NƠI CHỨA CÁC DỰ ÁN CỦA BẠN
-    │
-    ├── 1_core_libraries/        # Các package dùng chung (kết nối DDS, map 3D)
-    │
-    ├── project_1_circle_flight/ # Dự án 1: Kịch bản bay vòng tròn
+~/ros2_ws/
+├── docker-compose.yml
+├── Dockerfile
+└── src/
+    ├── demo1/                   # Bầy đàn 3 UAV cơ bản
+    │   └── run_swarm.sh
+    ├── project_1_circle_flight/ # Kịch bản bay vòng tròn
     │   ├── package.xml
     │   └── launch/circle.launch.py
-    │
-    └── project_2_delivery/      # Dự án 2: Kịch bản giao hàng đa điểm
+    └── project_2_delivery/      # Kịch bản giao hàng
         ├── package.xml
         └── launch/delivery.launch.py
 ```
 
-### Luồng làm việc luân phiên giữa các dự án:
+Luồng làm việc luân phiên (bên trong container):
 
-1. **Khi làm việc với Dự án 1:** (Bên trong container Docker)
-   ```bash
-   # Chỉ định đích danh package cần biên dịch
-   colcon build --packages-select project_1_circle_flight 1_core_libraries
-   source install/setup.bash
-   ros2 launch project_1_circle_flight circle.launch.py
-   ```
+```bash
+# Dự án 1
+colcon build --packages-select project_1_circle_flight
+source install/setup.bash
+ros2 launch project_1_circle_flight circle.launch.py
 
-2. **Khi chuyển sang Dự án 2 (Không cần thoát hay tắt Docker):**
-   Nhấn `Ctrl + C` để dừng script của dự án 1 đang chạy, sau đó gõ:
-   ```bash
-   colcon build --packages-select project_2_delivery
-   source install/setup.bash
-   ros2 launch project_2_delivery delivery.launch.py
-   ```
+# Ctrl+C → chuyển sang Dự án 2
+colcon build --packages-select project_2_delivery
+source install/setup.bash
+ros2 launch project_2_delivery delivery.launch.py
+```
 
 ---
 
-## 🛑 Dọn dẹp & Tắt hệ thống
-Khi làm việc xong, bạn có thể tắt môi trường Docker để giải phóng tài nguyên hệ thống (Mã nguồn code của bạn tại `~/ros2_ws` vẫn được giữ nguyên an toàn):
+## 🛑 Tắt hệ thống
+
 ```bash
 cd ~/ros2_ws
 docker compose down
 ```
+
+Mã nguồn tại `~/ros2_ws` vẫn được giữ nguyên.

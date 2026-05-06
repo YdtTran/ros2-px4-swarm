@@ -1,0 +1,16 @@
+services:
+  swarm_env:
+    build: .
+    container_name: px4_swarm_jazzy
+    network_mode: "host"       # Chia sẻ mạng lưới DDS với host
+    privileged: true
+    ipc: host                  # Tối ưu hóa bộ nhớ chia sẻ cho GUI
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw # Cấp quyền hiển thị đồ họa
+      - .:/workspace/ros2_ws             # Đồng bộ mã nguồn theo thời gian thực
+    devices:
+      - /dev/dri:/dev/dri      # <--- QUAN TRỌNG: Cấp quyền truy cập thẳng vào Card AMD/Intel
+    command: tail -f /dev/null           # Giữ container chạy ngầm
