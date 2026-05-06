@@ -7,7 +7,7 @@ Kiến trúc Docker giúp loại bỏ hoàn toàn các lỗi xung đột môi tr
 ## 🏗 Kiến trúc Hệ thống
 
 ![Kiến trúc Hệ thống Bầy đàn UAV](docs/architecture.png)
-*(Lưu ý: Mở file `docs/architecture.html` trên trình duyệt để xem sơ đồ tương tác với hiệu ứng luồng dữ liệu).* 
+*(Lưu ý: Mở [architecture](https://hcmut-lab.github.io/ros2-px4-swarm/docs/architecture.html) trên trình duyệt để xem sơ đồ tương tác với hiệu ứng luồng dữ liệu).* 
 
 ## ⚠️ Yêu cầu Hệ thống (Prerequisites)
 
