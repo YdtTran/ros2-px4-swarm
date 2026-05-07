@@ -30,3 +30,9 @@ Thumbs.db
 # PX4 logs (nếu mount vào workspace)
 *.ulg
 *.bag
+
+# External ROS 2 dependencies (cloned separately)
+src/px4_msgs/
+
+# Vendor (replaced by pyrvo pip package)
+src/uav_swarm_demo/vendor/
