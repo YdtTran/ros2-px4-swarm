@@ -101,6 +101,14 @@ class CollisionAvoidance:
     # Per-step control
     # ------------------------------------------------------------------
 
+    def update_agent_position(self, agent_id: int, x: float, y: float) -> None:
+        """Override the simulator's tracked position for an agent.
+
+        Call this each step when agent positions come from an external source
+        (e.g. MAVROS) rather than from the ORCA integrator.
+        """
+        self._sim.set_agent_position(agent_id, (x, y))
+
     def set_preferred_velocity(
         self, agent_id: int, vx: float, vy: float
     ) -> None:
