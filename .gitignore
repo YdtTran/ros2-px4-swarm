@@ -36,3 +36,4 @@ src/px4_msgs/
 
 # Vendor (replaced by pyrvo pip package)
 src/uav_swarm_demo/vendor/
+.gitmodules
