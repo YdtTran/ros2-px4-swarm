@@ -28,12 +28,33 @@ ROS 2 Node (px4_swarm)
 
 - **OS:** Ubuntu 24.04 LTS
 - **Docker Engine** (không cần GPU rời — simulation dùng software rendering)
+- **QGroundControl** — theo dõi trạng thái 3 UAV trên bản đồ, kiểm tra arm/mode/telemetry
 
 ---
 
 ## 🚀 Cài đặt (Lần đầu)
 
-### Bước 1: Cài Docker Engine
+### Bước 1: Cài QGroundControl (trên máy thật)
+
+```bash
+sudo usermod -a -G dialout $USER
+sudo apt-get remove modemmanager -y
+sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
+sudo apt install libfuse2 libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
+```
+
+> ⚠️ **Đăng xuất và đăng nhập lại** để quyền `dialout` có hiệu lực.
+
+```bash
+mkdir -p ~/ENV && cd ~/ENV
+wget -O QGroundControl.AppImage \
+    https://github.com/mavlink/qgroundcontrol/releases/download/v5.0.8/QGroundControl-x86_64.AppImage
+chmod +x ./QGroundControl.AppImage
+```
+
+---
+
+### Bước 2: Cài Docker Engine
 
 ```bash
 sudo apt-get update
