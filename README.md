@@ -1,6 +1,6 @@
 # 🛸 ROS 2 PX4 Swarm Simulation (Dockerized)
 
-Nền tảng mô phỏng bầy đàn 3 UAV tự động. Dự án được đóng gói 100% bằng Docker, sử dụng **ROS 2 Jazzy**, **PX4 SITL**, **Gazebo Harmonic** và **MAVROS** làm cầu nối giao tiếp.
+Nền tảng mô phỏng bầy đàn 3 UAV tự động. Dự án được đóng gói 100% bằng Docker, sử dụng **ROS 2 Jazzy**, **PX4 SITL**, **Gazebo Harmonic** và **Micro XRCE-DDS** làm cầu nối giao tiếp.
 
 Docker giúp loại bỏ xung đột môi trường, giữ máy host sạch và hỗ trợ software rendering cho máy không có GPU rời.
 
@@ -13,53 +13,27 @@ Docker giúp loại bỏ xung đột môi trường, giữ máy host sạch và 
 **Luồng điều khiển:**
 ```
 ROS 2 Node (px4_swarm)
-  → pymavlink UDP  →  PX4 SITL  →  Gazebo Harmonic
-  ← MAVROS topics  ←  (state, pose)
+  → px4_msgs (TrajectorySetpoint, VehicleCommand)  →  Micro XRCE-DDS Agent  →  PX4 SITL  →  Gazebo Harmonic
+  ← px4_msgs (VehicleLocalPosition, VehicleStatus) ←
 ```
 
 **Thuật toán:**
-- **A\*** — lập kế hoạch đường đi toàn cục
-- **Leader-Follower** — giữ đội hình V-shape
-- **ORCA** — tránh va chạm thời gian thực
+- **A\*** — lập kế hoạch đường đi toàn cục trên lưới 2D
+- **Leader-Follower** — giữ đội hình V-shape, follower bám theo leader
+- **ORCA** — tránh va chạm thời gian thực giữa các UAV
 
 ---
 
 ## ⚠️ Yêu cầu Hệ thống
 
 - **OS:** Ubuntu 24.04 LTS
-- **Màn hình:** X11 (không dùng Wayland)
-
-> **Chuyển sang X11:**
-> 1. `sudo nano /etc/gdm3/custom.conf`
-> 2. Bỏ dấu `#` ở dòng `#WaylandEnable=false`
-> 3. Lưu và `reboot`
-> 4. Kiểm tra: `echo $XDG_SESSION_TYPE` → phải ra `x11`
+- **Docker Engine** (không cần GPU rời — simulation dùng software rendering)
 
 ---
 
 ## 🚀 Cài đặt (Lần đầu)
 
-### Bước 1: Cài QGroundControl (trên máy thật)
-
-```bash
-sudo usermod -a -G dialout $USER
-sudo apt-get remove modemmanager -y
-sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
-sudo apt install libfuse2 libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
-```
-
-> ⚠️ **Đăng xuất và đăng nhập lại** để quyền `dialout` có hiệu lực.
-
-```bash
-mkdir -p ~/ENV && cd ~/ENV
-wget -O QGroundControl.AppImage \
-    https://github.com/mavlink/qgroundcontrol/releases/download/v5.0.8/QGroundControl-x86_64.AppImage
-chmod +x ./QGroundControl.AppImage
-```
-
----
-
-### Bước 2: Cài Docker Engine
+### Bước 1: Cài Docker Engine
 
 ```bash
 sudo apt-get update
@@ -80,7 +54,7 @@ newgrp docker
 
 ---
 
-### Bước 3: Lấy code và build image
+### Bước 2: Lấy code và tạo docker-compose
 
 ```bash
 mkdir -p ~/ros2_ws
@@ -88,7 +62,7 @@ cd ~/ros2_ws
 git clone https://github.com/HCMUT-LAB/ros2-px4-swarm.git .
 ```
 
-Tạo file `docker-compose.yml` tại `~/ros2_ws/docker-compose.yml`:
+Tạo file `~/ros2_ws/docker-compose.yml`:
 
 ```yaml
 services:
@@ -109,14 +83,14 @@ services:
     command: tail -f /dev/null
 ```
 
-### Bước 4: Build Docker (~20-40 phút lần đầu)
+### Bước 3: Build Docker (~20-40 phút lần đầu)
 
 ```bash
 cd ~/ros2_ws
 docker compose up -d --build
 ```
 
-> ⚠️ Lần đầu mất **20-40 phút** vì phải compile PX4 + Gazebo. Các lần sau chỉ cần `docker compose up -d`.
+> ⚠️ Lần đầu mất **20-40 phút** vì phải compile PX4 + px4_msgs + Gazebo. Các lần sau chỉ cần `docker compose up -d`.
 
 ---
 
@@ -129,13 +103,7 @@ cd ~/ros2_ws
 docker compose up -d
 ```
 
-### 2. Cấp quyền hiển thị đồ họa (bắt buộc trước khi dùng GUI)
-
-```bash
-xhost +local:root
-```
-
-### 3. Mở terminal trong container
+### 2. Mở terminal trong container
 
 ```bash
 docker exec -it px4_swarm_jazzy bash
@@ -145,44 +113,41 @@ docker exec -it px4_swarm_jazzy bash
 
 ## 🛸 Chạy Mô phỏng Bầy đàn 3 UAV
 
-### Bước 1: Khởi động QGroundControl (trên máy thật)
+### Bước 1: Khởi động simulation (bên trong container)
+
+```bash
+cd /workspace/ros2_ws/src/uav_swarm_demo
+chmod +x run.sh   # Chỉ cần chạy 1 lần đầu
+
+# Headless (không cần màn hình):
+./run.sh
+
+# Hoặc mở cửa sổ Gazebo 3D (cần X11):
+xhost +local:root   # chạy trên máy thật trước
+./run.sh --gui
+```
+
+Script tự động thực hiện theo thứ tự:
+
+| Bước | Hành động |
+|------|-----------|
+| 1/4 | Khởi động **Micro XRCE-DDS Agent** (port 8888) + GCS heartbeat sender |
+| 2/4 | Khởi động **Gazebo server** (map Baylands, headless) |
+| 3/4 | Spawn **3 UAV PX4 SITL** tại x = 0m, 2m, 4m — chờ kết nối XRCE-DDS |
+| 4/4 | Build package + khởi động **swarm node** |
+
+Khi thấy `✅ UAV Swarm Demo đang chạy!` là hệ thống hoạt động.
+
+### Bước 2: Theo dõi (tuỳ chọn)
+
+Kết nối QGroundControl từ máy thật — 3 vehicle tự động xuất hiện trên bản đồ:
 
 ```bash
 cd ~/ENV
 ./QGroundControl.AppImage
 ```
 
-Để QGC ở trạng thái chờ — nó sẽ **tự động phát hiện UAV** khi simulation khởi động.
-
-### Bước 2: Khởi động simulation (bên trong container)
-
-```bash
-cd /workspace/ros2_ws/src/uav_swarm_demo
-chmod +x run.sh   # Chỉ cần chạy 1 lần đầu
-
-# Headless (nhẹ hơn, theo dõi qua QGC):
-./run.sh
-
-# Hoặc mở cửa sổ Gazebo 3D:
-./run.sh --gui
-```
-
-> **Lưu ý:** Khi dùng `--gui`, phải chạy `xhost +local:root` trên máy thật trước.
-
-Script tự động thực hiện:
-1. **Gazebo server** — môi trường vật lý 3D, map Baylands
-2. **3 UAV PX4 SITL** — spawn tuần tự tại `x = 0m, 2m, 4m`
-3. **MAVROS** — 3 instance, mỗi UAV 1 namespace (`/uav0`, `/uav1`, `/uav2`)
-4. **Build package** — `colcon build --symlink-install`
-5. **Swarm node** — ARM → Takeoff 5m → Bay đội hình V-shape
-
-Khi thấy `✅ UAV Swarm Demo đang chạy!` là hệ thống hoạt động.
-
-### Bước 3: Kiểm tra kết nối
-
-Trên QGC, **3 vehicle xuất hiện tự động** trên bản đồ Baylands. Panel **Multi Vehicle Selection** ở góc phải cho phép theo dõi đồng thời cả bầy đàn.
-
-> **EKF2 cần ~15-30 giây** để hội tụ. Cảnh báo `heading estimate invalid` sẽ tự hết — chờ đến khi status chuyển sang **Ready To Fly**.
+> **EKF2 cần ~15 giây** để hội tụ. Cảnh báo `heading estimate invalid` sẽ tự hết — chờ đến khi status chuyển sang **Ready To Fly**.
 
 ### Kết quả
 
@@ -190,18 +155,20 @@ Trên QGC, **3 vehicle xuất hiện tự động** trên bản đồ Baylands. 
 
 *Gazebo (trái): 3 UAV x500 spawn trên map Baylands. QGroundControl (phải): 3 vehicle kết nối tự động.*
 
-### Bước 4: Dừng mô phỏng
+### Bước 3: Dừng mô phỏng
 
 Nhấn `Ctrl+C` trong terminal đang chạy script. Script tự dọn dẹp toàn bộ tiến trình.
 
 ---
 
-## 📂 Cấu trúc Package
+## 📂 Cấu trúc Project
 
 ```text
 ~/ros2_ws/
-├── Dockerfile
+├── Dockerfile                              # ROS 2 Jazzy + PX4 SITL + px4_msgs
 ├── docker-compose.yml
+├── scripts/
+│   └── gcs_heartbeat.py                   # Giả lập GCS heartbeat cho PX4 SITL
 └── src/
     └── uav_swarm_demo/
         ├── run.sh                          # Launcher tự chứa
@@ -209,11 +176,40 @@ Nhấn `Ctrl+C` trong terminal đang chạy script. Script tự dọn dẹp toà
         ├── setup.py
         └── uav_swarm_demo/
             ├── nodes/
-            │   └── px4_swarm_node.py       # Offboard controller (pymavlink + MAVROS)
+            │   └── px4_swarm_node.py       # Offboard controller (px4_msgs / XRCE-DDS)
             └── algorithms/
                 ├── planner.py              # A* path planning
                 ├── formation.py            # Leader-Follower
                 └── collision_avoidance.py  # ORCA
+```
+
+---
+
+## 🔧 Chi tiết Kỹ thuật
+
+### XRCE-DDS Namespace Convention
+
+PX4 SITL với nhiều instance sử dụng namespace khác nhau:
+
+| Instance | PX4 flag | ROS 2 namespace | MAVLink sysid |
+|----------|----------|-----------------|---------------|
+| 0 | `-i 0` | `/fmu/...` (không có prefix) | 1 |
+| 1 | `-i 1` | `/px4_1/fmu/...` | 2 |
+| 2 | `-i 2` | `/px4_2/fmu/...` | 3 |
+
+### GCS Heartbeat
+
+PX4 SITL từ chối ARM nếu không có kết nối GCS. Script `scripts/gcs_heartbeat.py` gửi MAVLink v1 heartbeat (type=GCS, sysid=255) đến port UDP 18570/18571/18572 của từng instance — không cần cài `pymavlink`.
+
+### Cấu hình Bầy đàn
+
+Chỉnh trong `px4_swarm_node.py`:
+
+```python
+TARGET_ALT    = 5.0    # Độ cao bay (m)
+MAX_SPEED     = 2.0    # Tốc độ tối đa (m/s)
+GRID_RES      = 2.0    # Độ phân giải lưới A* (m/cell)
+USE_WALL      = False  # True = bật tường chướng ngại vật
 ```
 
 ---
