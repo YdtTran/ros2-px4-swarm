@@ -17,21 +17,19 @@ RUN git clone https://github.com/PX4/PX4-Autopilot.git --recursive
 RUN bash PX4-Autopilot/Tools/setup/ubuntu.sh --no-nuttx
 RUN cd PX4-Autopilot && make px4_sitl_default
 
-# 3. MAVROS — cài qua apt, không cần build từ source
-RUN apt-get update && apt-get install -y \
-    ros-jazzy-mavros \
-    ros-jazzy-mavros-msgs \
-    ros-jazzy-mavros-extras \
-    && rm -rf /var/lib/apt/lists/*
-
-# GeographicLib dataset (bắt buộc cho MAVROS)
-RUN /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+# 3. px4_msgs — build từ source để match đúng PX4 version trong image
+RUN mkdir -p /opt/px4_msgs_ws/src \
+    && git clone https://github.com/PX4/px4_msgs.git /opt/px4_msgs_ws/src/px4_msgs
+RUN . /opt/ros/jazzy/setup.sh \
+    && cd /opt/px4_msgs_ws \
+    && colcon build --symlink-install
 
 # 4. Python deps cho thuật toán swarm
 RUN pip3 install pyrvo pathfinding --break-system-packages
 
 # 5. Auto-source
 RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc \
+    && echo "source /opt/px4_msgs_ws/install/setup.bash" >> ~/.bashrc \
     && echo "source /workspace/ros2_ws/install/setup.bash 2>/dev/null || true" >> ~/.bashrc
 
 WORKDIR /workspace/ros2_ws

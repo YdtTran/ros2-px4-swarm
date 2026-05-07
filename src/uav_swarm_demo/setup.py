@@ -13,7 +13,7 @@ setup(
         ('share/' + package_name + '/launch', ['launch/swarm_demo.launch.py']),
         ('share/' + package_name + '/config', ['config/swarm_demo.rviz']),
     ],
-    install_requires=['setuptools', 'pathfinding', 'pyrvo', 'pymavlink'],
+    install_requires=['setuptools', 'pathfinding', 'pyrvo'],
     zip_safe=True,
     maintainer='pc',
     maintainer_email='hieu.ngminh98@gmail.com',
@@ -26,7 +26,6 @@ setup(
         'console_scripts': [
             'swarm_controller = uav_swarm_demo.nodes.swarm_controller_node:main',
             'px4_swarm        = uav_swarm_demo.nodes.px4_swarm_node:main',
-            'gz_chase_cam     = uav_swarm_demo.gz_chase_cam:main',
         ],
     },
 )
