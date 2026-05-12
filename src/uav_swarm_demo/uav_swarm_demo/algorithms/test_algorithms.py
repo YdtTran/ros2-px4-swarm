@@ -3,11 +3,14 @@ Integration test for GlobalPlanner (pathfinding) + CollisionAvoidance (pyrvo).
 """
 
 import math
-import sys
-sys.path.insert(0, '.')
 
-from planner import GlobalPlanner
-from collision_avoidance import CollisionAvoidance
+try:
+    from uav_swarm_demo.algorithms.planner import GlobalPlanner
+    from uav_swarm_demo.algorithms.collision_avoidance import CollisionAvoidance
+except ImportError:
+    # Fallback: allow running as `python3 test_algorithms.py` from algorithms/
+    from planner import GlobalPlanner
+    from collision_avoidance import CollisionAvoidance
 
 
 def dist(p1, p2):

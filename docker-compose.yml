@@ -7,9 +7,11 @@ services:
     ipc: host                  # Tối ưu hóa bộ nhớ chia sẻ cho GUI
     environment:
       - DISPLAY=${DISPLAY}
+      - XAUTHORITY=/root/.Xauthority
       - QT_X11_NO_MITSHM=1
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw # Cấp quyền hiển thị đồ họa
+      - ${XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
       - .:/workspace/ros2_ws             # Đồng bộ mã nguồn theo thời gian thực
     devices:
       - /dev/dri:/dev/dri      # <--- QUAN TRỌNG: Cấp quyền truy cập thẳng vào Card AMD/Intel

@@ -74,12 +74,12 @@ class CollisionAvoidance:
             return self._sim.add_agent(pos)
         return self._sim.add_agent(
             pos,
-            radius or self._radius,
-            10,                        # max_neighbors
-            5.0,                       # neighbor_dist
-            2.0,                       # time_horizon
-            2.0,                       # time_horizon_obst
-            max_speed or self._max_speed,
+            5.0,                            # neighbor_dist
+            10,                             # max_neighbors
+            2.0,                            # time_horizon
+            2.0,                            # time_horizon_obst
+            radius or self._radius,         # radius
+            max_speed or self._max_speed,   # max_speed
         )
 
     def add_obstacle(self, vertices: List[Tuple[float, float]]) -> int:
@@ -92,8 +92,7 @@ class CollisionAvoidance:
         Returns:
             obstacle id.
         """
-        verts = [(x, y) for x, y in vertices]
-        obs_id = self._sim.add_obstacle(verts)
+        obs_id = self._sim.add_obstacle(vertices)
         self._sim.process_obstacles()
         return obs_id
 

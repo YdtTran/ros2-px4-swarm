@@ -1,3 +1,10 @@
+# Visualisation-only launch file.
+#
+# Starts SwarmControllerNode (standalone simulation, NO PX4 connection) + RViz.
+# Use this to preview the swarm algorithm without any flight hardware or SITL.
+#
+# For real PX4 SITL control run:  ./src/uav_swarm_demo/run.sh [--gui]
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution

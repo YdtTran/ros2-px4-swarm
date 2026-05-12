@@ -1,14 +1,23 @@
 """
-SwarmControllerNode — central controller for a 3-UAV Leader-Follower swarm.
+SwarmControllerNode — standalone simulation + RViz visualisation node.
+
+This node runs the full swarm algorithm (A* + Leader-Follower + ORCA) on
+an internal simulated state.  It does NOT subscribe to any PX4 / XRCE-DDS
+topics and does NOT send commands to real UAVs.
+
+Use this node to:
+  • Visualise the swarm algorithm in RViz without PX4 running.
+  • Tune formation / planner parameters offline.
+
+For real PX4 SITL/hardware control use px4_swarm_node.py (run.sh).
 
 Pipeline (runs every timer tick):
   1. Formation   → compute preferred velocity for each UAV
   2. ORCA        → compute collision-free velocity for each UAV
-  3. Integrate   → update UAV positions inside the simulator
+  3. Integrate   → update UAV positions inside the ORCA simulator
   4. Publish     → PoseArray + MarkerArray (RViz) + nav_msgs/Path (A* path)
 """
 
-import math
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -24,22 +33,27 @@ from uav_swarm_demo.algorithms.formation import LeaderFollowerFormation, UAVStat
 from uav_swarm_demo.algorithms.collision_avoidance import CollisionAvoidance
 
 
-# ---------------------------------------------------------------------------
-# Default obstacle map (1 = free, 0 = obstacle)  20×20 grid
-# Modify or replace this with dynamic map loading as needed.
-# ---------------------------------------------------------------------------
+USE_WALL = False  # True = add horizontal wall with gap in the centre of the map
+
+
 def _build_default_map(rows: int = 20, cols: int = 20) -> list[list[int]]:
     grid = [[1] * cols for _ in range(rows)]
-    # Horizontal wall with a gap
-    wall_row = rows // 2
-    gap = cols // 2
-    for c in range(cols):
-        if c != gap:
-            grid[wall_row][c] = 0
+    if USE_WALL:
+        wall_row = rows // 2
+        gap = cols // 2
+        for c in range(cols):
+            if c != gap:
+                grid[wall_row][c] = 0
     return grid
 
 
 class SwarmControllerNode(Node):
+
+    _MARKER_COLORS = [
+        (1.0, 0.2, 0.2),   # UAV 0 leader   — red
+        (0.2, 0.8, 0.2),   # UAV 1 follower — green
+        (0.2, 0.4, 1.0),   # UAV 2 follower — blue
+    ]
 
     def __init__(self):
         super().__init__('swarm_controller')
@@ -90,17 +104,15 @@ class SwarmControllerNode(Node):
         self._formation = LeaderFollowerFormation(
             follower_offsets=[(-2.0, -2.0), (-2.0, 2.0)],
             max_speed=self._max_spd,
-            k_p=1.5,
+            k_p=1.2,
         )
 
-        # Internal UAV states (used for formation logic)
+        # Internal UAV states — leader at start, followers at their formation offsets
         sx_m = self._sx * self._res
         sy_m = self._sy * self._res
-        self._uavs = [
-            UAVState(uav_id=0, x=sx_m,       y=sy_m),        # leader
-            UAVState(uav_id=1, x=sx_m - 2.0, y=sy_m - 2.0),  # follower 1
-            UAVState(uav_id=2, x=sx_m - 2.0, y=sy_m + 2.0),  # follower 2
-        ]
+        self._uavs = [UAVState(uav_id=0, x=sx_m, y=sy_m)]
+        for uid, (dx, dy) in enumerate(self._formation.offsets, start=1):
+            self._uavs.append(UAVState(uav_id=uid, x=sx_m + dx, y=sy_m + dy))
 
         # ── ORCA collision avoidance (pyrvo) ──────────────────────────────
         self._ca = CollisionAvoidance(
@@ -125,6 +137,7 @@ class SwarmControllerNode(Node):
         self._timer = self.create_timer(1.0 / self._rate, self._control_loop)
 
         self._goal_reached = False
+        self._path_published = False  # path is static — publish once, not every tick
         self.get_logger().info('SwarmControllerNode started.')
 
     # -----------------------------------------------------------------------
@@ -163,14 +176,15 @@ class SwarmControllerNode(Node):
         now = self.get_clock().now().to_msg()
         self._publish_poses(now)
         self._publish_markers(now)
-        self._publish_path(now)
+        if not self._path_published:  # path is static — publish once
+            self._publish_path(now)
+            self._path_published = True
 
         # ── 5. Goal check ─────────────────────────────────────────────────
         if self._wp_idx >= len(self._path):
             gx_m = self._gx * self._res
             gy_m = self._gy * self._res
-            d = math.sqrt((leader.x - gx_m) ** 2 + (leader.y - gy_m) ** 2)
-            if d < 0.5:
+            if (leader.x - gx_m) ** 2 + (leader.y - gy_m) ** 2 < 0.25:
                 self._goal_reached = True
                 self.get_logger().info('Goal reached! Swarm stopped.')
 
@@ -198,12 +212,7 @@ class SwarmControllerNode(Node):
 
     def _publish_markers(self, stamp):
         markers = MarkerArray()
-        colors = [
-            (1.0, 0.2, 0.2),   # UAV 0 leader  — red
-            (0.2, 0.8, 0.2),   # UAV 1 follower — green
-            (0.2, 0.4, 1.0),   # UAV 2 follower — blue
-        ]
-        for i, (uav, (r, g, b)) in enumerate(zip(self._uavs, colors)):
+        for i, (uav, (r, g, b)) in enumerate(zip(self._uavs, self._MARKER_COLORS)):
             m = Marker()
             m.header = self._header(stamp)
             m.ns = 'uavs'

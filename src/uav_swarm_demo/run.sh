@@ -2,17 +2,26 @@
 # UAV Swarm Demo — Gazebo + 3 UAV PX4 + XRCE-DDS + Swarm Algorithm
 
 SHOW_GUI=0
-if [ "$1" = "--gui" ]; then
-    SHOW_GUI=1
-fi
+DO_BUILD=1
+for arg in "$@"; do
+    case "$arg" in
+        --gui)      SHOW_GUI=1  ;;
+        --no-build) DO_BUILD=0  ;;
+    esac
+done
+
+# ── Cấu hình map ──────────────────────────────────────────────────────────────
+# Chỉ cần đổi dòng này để thay world Gazebo.
+# Các world có sẵn trong PX4: default | baylands | lawn | sonoma_raceway | ...
+GZ_WORLD=default
 
 # ── Dọn dẹp tiến trình cũ ─────────────────────────────────────────────────────
 pkill -9 -x px4             2>/dev/null || true
 pkill -9 -x MicroXRCEAgent  2>/dev/null || true
 pkill -9 -f "gz sim"        2>/dev/null || true
 pkill -9 -f "px4_swarm"     2>/dev/null || true
-pkill -9 -f "gcs_heartbeat" 2>/dev/null || true
-sleep 2
+pkill -9 -f "mavlink_proxy" 2>/dev/null || true
+sleep 2  # wait for killed processes to release ports and file locks
 
 trap '
     echo -e "\n🛑 Dừng toàn bộ..."
@@ -20,7 +29,7 @@ trap '
     pkill -9 -x MicroXRCEAgent 2>/dev/null
     pkill -9 -f "gz sim" 2>/dev/null
     pkill -9 -f "px4_swarm" 2>/dev/null
-    pkill -9 -f "gcs_heartbeat" 2>/dev/null
+    pkill -9 -f "mavlink_proxy" 2>/dev/null
     sleep 1
     rm -f /tmp/uav_swarm_server.config
     rm -rf "$BUILD_PATH/instance_0" "$BUILD_PATH/instance_1" "$BUILD_PATH/instance_2"
@@ -30,28 +39,47 @@ trap '
 PX4_PATH=/opt/env/PX4-Autopilot
 BUILD_PATH=$PX4_PATH/build/px4_sitl_default
 
+# Xóa thư mục instance cũ để tránh dataman stale ("Mission rejected: empty")
+rm -rf "$BUILD_PATH/instance_0" "$BUILD_PATH/instance_1" "$BUILD_PATH/instance_2" 2>/dev/null || true
+
 # ── Vá SDF ────────────────────────────────────────────────────────────────────
 sed -i '/<gz_frame_id>/d' \
     $PX4_PATH/Tools/simulation/gz/models/x500_base/model.sdf 2>/dev/null
 sed -i '/<plugin filename="MotorFailurePlugin"/,/<\/plugin>/d' \
     $PX4_PATH/Tools/simulation/gz/models/x500/model.sdf 2>/dev/null
-sed -i 's/<shadows>1<\/shadows>/<shadows>0<\/shadows>/g' \
-    $PX4_PATH/Tools/simulation/gz/worlds/baylands.sdf 2>/dev/null
+
+# Mỗi UAV gửi MAVLink về port riêng: UAV0→14550, UAV1→14560, UAV2→14570
+# -p: broadcast mode (QGC trên LAN tự discover)
+# -o: remote port riêng cho từng instance
+PX4_MAVLINK_RC=$BUILD_PATH/etc/init.d-posix/px4-rc.mavlink
+sed -i 's/mavlink start -x -u \$udp_gcs_port_local -r 4000000 -f.*/mavlink start -x -u $udp_gcs_port_local -r 4000000 -f -p -o $((14550 + px4_instance * 10))/' "$PX4_MAVLINK_RC"
+sed -i '/^param set MAV_0_BROADCAST/d' "$PX4_MAVLINK_RC"
+
+# SITL param tuning — remove stale lines then re-inject cleanly each run.
+# Uses s/// so \n expands to real newlines in GNU sed (unlike /i text\nmore).
+sed -i '/^param set EKF2_GPS_CHECK\|^param set EKF2_GPS_V_NOISE\|^param set EKF2_BARO_NOISE\|^param set EKF2_REQ_\|^param set FD_FAIL/d' "$PX4_MAVLINK_RC"
+sed -i 's/^mavlink start/param set EKF2_GPS_CHECK 0\nparam set EKF2_GPS_V_NOISE 0.5\nparam set EKF2_BARO_NOISE 3.5\nparam set EKF2_REQ_VDRIFT 0.5\nparam set EKF2_REQ_HDRIFT 0.5\nparam set FD_FAIL_P 0.9\nparam set FD_FAIL_R 0.9\nmavlink start/' "$PX4_MAVLINK_RC"
 
 # ── Bước 1/4: XRCE-DDS Agent ──────────────────────────────────────────────────
 echo "🚀 [1/4] Micro XRCE-DDS Agent (port 8888)..."
 MicroXRCEAgent udp4 -p 8888 > /tmp/xrce_agent.log 2>&1 &
 AGENT_PID=$!
 
-# Fake GCS heartbeats so PX4 SITL passes the "No connection to GCS" preflight check
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python3 "$SCRIPT_DIR/../../scripts/gcs_heartbeat.py" > /dev/null 2>&1 &
-sleep 2
+
+# Start MAVLink proxy before PX4 — proxy binds :14560/:14570 and sends GCS
+# heartbeats so PX4 UAV1/2 adopt those as partner ports.
+# UAV0 connects to QGC directly (:14550); proxy must NOT touch UAV0.
+python3 -u "$SCRIPT_DIR/../../scripts/mavlink_proxy.py" > /tmp/mavlink_proxy.log 2>&1 &
+sleep 2  # proxy must bind its UDP ports before PX4 starts and picks a partner port
 
 # ── Bước 2/4: Gazebo ──────────────────────────────────────────────────────────
 echo "🌍 [2/4] Gazebo server..."
 export GZ_SIM_RESOURCE_PATH=$PX4_PATH/Tools/simulation/gz/models:$PX4_PATH/Tools/simulation/gz/worlds
 export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_GL_VERSION_OVERRIDE=3.3
+export MESA_GLSL_VERSION_OVERRIDE=330
 
 CUSTOM_SERVER_CONFIG=/tmp/uav_swarm_server.config
 grep -v 'OpticalFlow\|GstCamera' $PX4_PATH/Tools/simulation/gz/server.config \
@@ -59,14 +87,25 @@ grep -v 'OpticalFlow\|GstCamera' $PX4_PATH/Tools/simulation/gz/server.config \
 export GZ_SIM_SERVER_CONFIG_PATH=$CUSTOM_SERVER_CONFIG
 
 gz sim -s -r --headless-rendering \
-    $PX4_PATH/Tools/simulation/gz/worlds/baylands.sdf 2>/dev/null &
+    $PX4_PATH/Tools/simulation/gz/worlds/${GZ_WORLD}.sdf 2>/dev/null &
 GZ_PID=$!
 
 if [ $SHOW_GUI -eq 1 ]; then
-    echo "🖥️  Gazebo GUI..."
     export XDG_RUNTIME_DIR=/tmp/runtime-root
     mkdir -p $XDG_RUNTIME_DIR
-    DRI_PRIME=1 gz sim -g --render-engine ogre > /dev/null 2>&1 &
+    _dnum="${DISPLAY##*:}"; _dnum="${_dnum%%.*}"
+    if [ -S "/tmp/.X11-unix/X${_dnum}" ]; then
+        echo "🖥️  Gazebo GUI..."
+        # Strip ROS2 vendor libs so system OGRE is used. Use ogre (v1/GLX) not
+        # ogre2 (EGL) — ogre2 hardcodes eglGetPlatformDevice which crashes under
+        # software rendering in Docker when the GPU driver is unavailable.
+        _clean_ld=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '/opt/ros' | tr '\n' ':')
+        LD_LIBRARY_PATH="$_clean_ld" gz sim -g --render-engine ogre > /tmp/gz_gui.log 2>&1 &
+    else
+        echo "⚠️  GUI yêu cầu X11. Chạy lệnh này trên HOST trước rồi restart container:"
+        echo "     xhost +local:"
+        echo "     docker compose down && docker compose up -d"
+    fi
 fi
 
 echo "⏳ Chờ Gazebo sẵn sàng..."
@@ -83,7 +122,7 @@ echo "🛸 [3/4] Khởi động 3 UAV PX4..."
 export PX4_SIM_LOCKSTEP=0
 export PX4_GZ_STANDALONE=1
 export PX4_SIM_MODEL=gz_x500
-export PX4_GZ_WORLD=baylands
+export PX4_GZ_WORLD=$GZ_WORLD
 export PATH=$BUILD_PATH/bin:$PATH
 
 if [ ! -f "$BUILD_PATH/bin/gz_bridge" ]; then
@@ -98,7 +137,7 @@ for i in 0 1 2; do
     PX4_GZ_MODEL_POSE="$((i * 2)),0,0,0,0,0" \
         $BUILD_PATH/bin/px4 -i $i -d $BUILD_PATH/etc > out.log 2> err.log &
     popd > /dev/null
-    sleep 3
+    sleep 3  # stagger spawns so Gazebo physics settles before the next model is inserted
 done
 
 # Chờ UAV spawn và kết nối XRCE-DDS
@@ -126,14 +165,34 @@ for i in 0 1 2; do
     done
 done
 
-echo "⏳ Chờ EKF2 hội tụ (15s)..."
-sleep 15
+echo "⏳ Chờ EKF2 hội tụ (pre_flight_checks_pass, cần 3 lần liên tiếp)..."
+for i in 0 1 2; do
+    if [ $i -eq 0 ]; then NS=""; else NS="/px4_${i}"; fi
+    TOPIC="${NS}/fmu/out/vehicle_status_v4"
+    echo -n "  UAV ${i}: "
+    ok=0; consec=0
+    for t in $(seq 1 90); do
+        val=$(ros2 topic echo --once "$TOPIC" 2>/dev/null | grep "pre_flight_checks_pass" | grep -o "true" || true)
+        if [ "$val" = "true" ]; then
+            consec=$((consec + 1))
+            if [ $consec -ge 3 ]; then
+                echo "✅ preflight stably OK (${t}s)"; ok=1; break
+            fi
+        else
+            consec=0
+        fi
+        sleep 1
+    done
+    [ $ok -eq 0 ] && echo "⚠️  timeout 90s — tiếp tục dù preflight chưa ổn định"
+done
 
 # ── Bước 4/4: Build + Swarm Node ──────────────────────────────────────────────
 echo "🤖 [4/4] Swarm Algorithm Node..."
 
 cd /workspace/ros2_ws
-colcon build --packages-select uav_swarm_demo --symlink-install
+if [ $DO_BUILD -eq 1 ]; then
+    colcon build --packages-select uav_swarm_demo --symlink-install --packages-ignore px4_msgs
+fi
 source install/setup.bash
 
 ros2 run uav_swarm_demo px4_swarm &

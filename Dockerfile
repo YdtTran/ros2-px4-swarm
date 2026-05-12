@@ -25,7 +25,7 @@ RUN . /opt/ros/jazzy/setup.sh \
     && colcon build --symlink-install
 
 # 4. Python deps cho thuật toán swarm
-RUN pip3 install pyrvo pathfinding --break-system-packages
+RUN pip3 install --no-cache-dir pyrvo pathfinding --break-system-packages
 
 # 5. Auto-source
 RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc \

@@ -10,7 +10,6 @@ Frame convention:
   Conversion ENU→NED: vx_ned=vy_enu, vy_ned=vx_enu, vz_ned=-vz_enu
 """
 
-import math
 import time
 from enum import Enum, auto
 
@@ -26,19 +25,24 @@ from px4_msgs.msg import (
     VehicleStatus,
 )
 
-from uav_swarm_demo.algorithms.planner import GlobalPlanner
 from uav_swarm_demo.algorithms.formation import LeaderFollowerFormation, UAVState
 from uav_swarm_demo.algorithms.collision_avoidance import CollisionAvoidance
 
 
 NUM_UAVS      = 3
-USE_WALL      = False  # True = có bức tường ngang giữa map
 TARGET_ALT    = 5.0    # m (ENU Up)
 TAKEOFF_SPEED = 1.5    # m/s
 ALT_TOLERANCE = 0.3    # m
 MAX_SPEED     = 2.0    # m/s
-GRID_RES      = 2.0    # m/cell
+GRID_RES      = 1.0    # m/cell
 CTRL_RATE     = 20.0   # Hz
+
+# ── Mission A → B ─────────────────────────────────────────────────────────────
+# UAVs spawn at A = (0, 0) ENU and fly in V-formation to B = (10, 0) ENU.
+# UAV0 = leader (0,0), UAV1 = follower (2,0), UAV2 = follower (4,0).
+# All three fly +10 m East and settle into V-shape behind the leader.
+POINT_A_ENU = (0.0, 0.0)    # spawn centroid (East, North) m
+POINT_B_ENU = (10.0, 0.0)   # goal            (East, North) m  — 10 m East
 
 # QoS cho px4_msgs (BEST_EFFORT + VOLATILE)
 _QOS = QoSProfile(
@@ -57,17 +61,6 @@ class FlightState(Enum):
     ARRIVED   = auto()
 
 
-def _build_map(rows: int = 15, cols: int = 15) -> list[list[int]]:
-    grid = [[1] * cols for _ in range(rows)]
-    if USE_WALL:
-        wall_row = rows // 2
-        gap = cols // 2
-        for c in range(cols):
-            if c != gap:
-                grid[wall_row][c] = 0
-    return grid
-
-
 class UAVData:
     def __init__(self, uav_id: int, init_x_enu: float, init_y_enu: float):
         self.id               = uav_id
@@ -77,8 +70,11 @@ class UAVData:
         self.x                = init_x_enu   # ENU East  (m)
         self.y                = init_y_enu   # ENU North (m)
         self.z                = 0.0          # ENU Up    (m)
-        self.offboard_count   = 0
-        self.arm_retry_count  = 0
+        self.offboard_count      = 0
+        self.arm_retry_count     = 0
+        self.preflight_pass      = False
+        self.preflight_stable    = 0   # consecutive ticks with preflight_pass=True
+        self.preflight_wait      = 0   # ticks waiting for stable preflight
 
 
 class PX4SwarmNode(Node):
@@ -121,19 +117,20 @@ class PX4SwarmNode(Node):
                 VehicleCommand, f'{ns}/fmu/in/vehicle_command', _QOS,
             ))
 
-        self._map     = _build_map()
-        self._planner = GlobalPlanner(self._map)
-        self._path    = None
-        self._wp_idx  = 0
+        # No obstacles — fly direct A → B (single waypoint in metric coords)
+        self._path   = [(int(round(POINT_B_ENU[0] / GRID_RES)),
+                         int(round(POINT_B_ENU[1] / GRID_RES)))]
+        self._wp_idx = 0
 
+        # V-formation: followers 2 m behind leader, ±1.5 m to the side
         self._formation = LeaderFollowerFormation(
-            follower_offsets=[(-3.0, -2.0), (-3.0, 2.0)],
+            follower_offsets=[(-2.0, -1.5), (-2.0, 1.5)],
             max_speed=MAX_SPEED,
             k_p=1.2,
         )
         self._ca = CollisionAvoidance(
             time_step=1.0 / CTRL_RATE,
-            neighbor_dist=8.0,
+            neighbor_dist=6.0,
             max_neighbors=10,
             time_horizon=2.0,
             time_horizon_obst=2.0,
@@ -148,11 +145,13 @@ class PX4SwarmNode(Node):
             for i, uav in enumerate(self._uavs)
         ]
 
-        self._goal_grid    = (12, 12)
         self._goal_reached = False
+        self._ts = 0  # microsecond timestamp, refreshed once per control tick
 
         self._timer = self.create_timer(1.0 / CTRL_RATE, self._control_loop)
-        self.get_logger().info('PX4SwarmNode started (XRCE-DDS).')
+        self.get_logger().info(
+            f'PX4SwarmNode started — A{POINT_A_ENU} → B{POINT_B_ENU}, direct path'
+        )
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
@@ -165,25 +164,37 @@ class PX4SwarmNode(Node):
 
     def _on_status(self, msg: VehicleStatus, idx: int):
         uav = self._uavs[idx]
-        uav.armed     = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
-        uav.nav_state = msg.nav_state
+        uav.armed        = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        uav.nav_state    = msg.nav_state
+        uav.preflight_pass = getattr(msg, 'pre_flight_checks_pass', False)
+        if uav.preflight_pass:
+            uav.preflight_stable = min(uav.preflight_stable + 1, 10)
+        else:
+            uav.preflight_stable = 0
 
     # ── Publishers ───────────────────────────────────────────────────────────
 
     def _pub_offboard_mode(self, idx: int):
         msg = OffboardControlMode()
-        msg.timestamp    = int(time.time() * 1e6)
-        msg.position     = False
-        msg.velocity     = True
+        msg.timestamp    = self._ts
+        msg.position     = True   # Z position hold (altitude)
+        msg.velocity     = True   # XY velocity control
         msg.acceleration = False
         self._ocm_pubs[idx].publish(msg)
 
     def _pub_velocity(self, idx: int, vx_enu: float, vy_enu: float, vz_enu: float = 0.0):
         msg = TrajectorySetpoint()
-        msg.timestamp    = int(time.time() * 1e6)
-        # ENU → NED
-        msg.velocity     = [vy_enu, vx_enu, -vz_enu]
-        msg.position     = [float('nan')] * 3
+        msg.timestamp    = self._ts
+        # XY: velocity control (ENU → NED); Z: position hold at TARGET_ALT.
+        # Mixed position+velocity mode prevents altitude drift from EKF noise.
+        msg.velocity     = [vy_enu, vx_enu, float('nan')]
+        # During takeoff we command upward velocity — use velocity-Z not position-Z.
+        # In all other states, hold TARGET_ALT via position setpoint.
+        if vz_enu != 0.0:
+            msg.position = [float('nan'), float('nan'), float('nan')]
+            msg.velocity[2] = -vz_enu  # NED: down = negative of ENU up
+        else:
+            msg.position = [float('nan'), float('nan'), -TARGET_ALT]  # NED z = -altitude
         msg.acceleration = [float('nan')] * 3
         msg.yaw          = float('nan')
         self._tsp_pubs[idx].publish(msg)
@@ -191,7 +202,7 @@ class PX4SwarmNode(Node):
     def _pub_vehicle_command(self, idx: int, command: int,
                              p1: float = 0.0, p2: float = 0.0):
         msg = VehicleCommand()
-        msg.timestamp        = int(time.time() * 1e6)
+        msg.timestamp        = self._ts
         msg.command          = command
         msg.param1           = p1
         msg.param2           = p2
@@ -217,16 +228,15 @@ class PX4SwarmNode(Node):
     # ── Control loop ─────────────────────────────────────────────────────────
 
     def _control_loop(self):
-        if self._goal_reached:
-            for i in range(NUM_UAVS):
-                self._pub_offboard_mode(i)
-                self._pub_velocity(i, 0.0, 0.0)
-            return
-
+        self._ts = int(time.time() * 1e6)  # one timestamp for the whole tick
         for i, uav in enumerate(self._uavs):
             self._pub_offboard_mode(i)
-            self._pub_velocity(i, 0.0, 0.0)
             uav.offboard_count += 1
+
+        if self._goal_reached:
+            for i in range(NUM_UAVS):
+                self._pub_velocity(i, 0.0, 0.0)
+            return
 
         self._run_state_machine()
 
@@ -235,16 +245,25 @@ class PX4SwarmNode(Node):
 
         for i, uav in enumerate(self._uavs):
             if uav.flight_state == FlightState.PREFLIGHT:
+                self._pub_velocity(i, 0.0, 0.0)
                 if uav.offboard_count > 10:
-                    self._set_offboard_mode(i)
-                    self._arm(i)
-                    uav.flight_state = FlightState.ARMING
-                    self.get_logger().info(f'UAV {i}: ARMING...')
+                    uav.preflight_wait += 1
+                    # Require 3 consecutive preflight_pass ticks (~150ms) before arming.
+                    # Fall back to force-arm after 30s if EKF2 never fully settles.
+                    ready = uav.preflight_stable >= 3
+                    timeout = uav.preflight_wait >= 600  # 30s at 20Hz
+                    if ready or timeout:
+                        self._set_offboard_mode(i)
+                        self._arm(i)
+                        uav.flight_state = FlightState.ARMING
+                        reason = 'preflight OK' if ready else 'timeout→force-arm'
+                        self.get_logger().info(f'UAV {i}: ARMING ({reason})...')
                 all_flying = False
 
             elif uav.flight_state == FlightState.ARMING:
+                self._pub_velocity(i, 0.0, 0.0)
                 uav.arm_retry_count += 1
-                if uav.arm_retry_count % 40 == 0:
+                if uav.arm_retry_count % 80 == 0:
                     self.get_logger().info(
                         f'UAV {i}: retry (armed={uav.armed}, nav_state={uav.nav_state})'
                     )
@@ -261,6 +280,7 @@ class PX4SwarmNode(Node):
                     uav.flight_state = FlightState.ARMING
                     uav.arm_retry_count = 0
                     self.get_logger().info(f'UAV {i}: disarmed, retry ARMING')
+                    self._pub_velocity(i, 0.0, 0.0)
                     all_flying = False
                     continue
                 err_z = TARGET_ALT - uav.z
@@ -275,21 +295,15 @@ class PX4SwarmNode(Node):
                 self._pub_velocity(i, 0.0, 0.0)
 
         if not all_flying:
+            # UAVs already in FLYING state hover while waiting for others to catch up
+            for i, uav in enumerate(self._uavs):
+                if uav.flight_state == FlightState.FLYING:
+                    self._pub_velocity(i, 0.0, 0.0)
             return
 
         self._run_formation_and_orca()
 
     def _run_formation_and_orca(self):
-        if self._path is None:
-            leader = self._uavs[0]
-            sx = int(round(leader.x / GRID_RES))
-            sy = int(round(leader.y / GRID_RES))
-            self._path = self._planner.plan(start=(sx, sy), goal=self._goal_grid)
-            if self._path is None:
-                self.get_logger().error('A*: không tìm được đường!')
-                return
-            self.get_logger().info(f'A* path: {len(self._path)} waypoints')
-
         for uav, fs in zip(self._uavs, self._fstates):
             fs.x, fs.y = uav.x, uav.y
 
@@ -314,17 +328,19 @@ class PX4SwarmNode(Node):
 
         for i, aid in enumerate(self._agent_ids):
             vx, vy = self._ca.get_velocity(aid)
+            self._fstates[i].vx = vx
+            self._fstates[i].vy = vy
             self._pub_velocity(i, vx, vy, 0.0)
 
         if self._wp_idx >= len(self._path):
             leader = self._uavs[0]
-            gx_m = self._goal_grid[0] * GRID_RES
-            gy_m = self._goal_grid[1] * GRID_RES
-            if math.sqrt((leader.x - gx_m) ** 2 + (leader.y - gy_m) ** 2) < 1.0:
+            if (leader.x - POINT_B_ENU[0]) ** 2 + (leader.y - POINT_B_ENU[1]) ** 2 < 1.0:
                 for uav in self._uavs:
                     uav.flight_state = FlightState.ARRIVED
                 self._goal_reached = True
-                self.get_logger().info('✅ Swarm đã đến đích!')
+                self.get_logger().info(
+                    f'✅ Swarm đã đến điểm B {POINT_B_ENU} — dừng bay!'
+                )
 
 
 def main(args=None):
