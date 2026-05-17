@@ -42,7 +42,11 @@ CTRL_RATE     = 20.0   # Hz
 # UAV0 = leader (0,0), UAV1 = follower (2,0), UAV2 = follower (4,0).
 # All three fly +10 m East and settle into V-shape behind the leader.
 POINT_A_ENU = (0.0, 0.0)    # spawn centroid (East, North) m
-POINT_B_ENU = (10.0, 0.0)   # goal            (East, North) m  — 10 m East
+POINT_B_ENU = (100.0, 50.0)   # goal            (East, North) m  — 10 m East
+
+# Matches the Gazebo wall injected by run.sh: centre (x, y), size (x, y).
+VIRTUAL_WALL_CENTER_ENU = (40.0, 25.0)
+VIRTUAL_WALL_SIZE_ENU = (0.3, 30.0)
 
 # QoS cho px4_msgs (BEST_EFFORT + VOLATILE)
 _QOS = QoSProfile(
@@ -117,7 +121,7 @@ class PX4SwarmNode(Node):
                 VehicleCommand, f'{ns}/fmu/in/vehicle_command', _QOS,
             ))
 
-        # No obstacles — fly direct A → B (single waypoint in metric coords)
+        # Direct A → B target; static wall avoidance is handled by ORCA below.
         self._path   = [(int(round(POINT_B_ENU[0] / GRID_RES)),
                          int(round(POINT_B_ENU[1] / GRID_RES)))]
         self._wp_idx = 0
@@ -140,6 +144,7 @@ class PX4SwarmNode(Node):
         self._agent_ids = [
             self._ca.add_agent(uav.x, uav.y) for uav in self._uavs
         ]
+        self._ca.add_obstacle(self._virtual_wall_vertices())
         self._fstates = [
             UAVState(uav_id=i, x=uav.x, y=uav.y)
             for i, uav in enumerate(self._uavs)
@@ -152,6 +157,23 @@ class PX4SwarmNode(Node):
         self.get_logger().info(
             f'PX4SwarmNode started — A{POINT_A_ENU} → B{POINT_B_ENU}, direct path'
         )
+        self.get_logger().info(
+            f'Virtual ORCA wall: center={VIRTUAL_WALL_CENTER_ENU}, '
+            f'size={VIRTUAL_WALL_SIZE_ENU}'
+        )
+
+    @staticmethod
+    def _virtual_wall_vertices():
+        cx, cy = VIRTUAL_WALL_CENTER_ENU
+        sx, sy = VIRTUAL_WALL_SIZE_ENU
+        half_x = sx / 2.0
+        half_y = sy / 2.0
+        return [
+            (cx - half_x, cy - half_y),
+            (cx + half_x, cy - half_y),
+            (cx + half_x, cy + half_y),
+            (cx - half_x, cy + half_y),
+        ]
 
     # ── Callbacks ────────────────────────────────────────────────────────────
 
