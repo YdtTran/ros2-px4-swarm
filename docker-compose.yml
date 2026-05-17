@@ -5,14 +5,20 @@ services:
     network_mode: "host"       # Chia sẻ mạng lưới DDS với host
     privileged: true
     ipc: host                  # Tối ưu hóa bộ nhớ chia sẻ cho GUI
+    gpus: all                  # Cấp NVIDIA GPU vào container (yêu cầu nvidia-container-toolkit trên host)
     environment:
       - DISPLAY=${DISPLAY}
       - XAUTHORITY=/root/.Xauthority
       - QT_X11_NO_MITSHM=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - __NV_PRIME_RENDER_OFFLOAD=1
+      - __GLX_VENDOR_LIBRARY_NAME=nvidia
+      - __VK_LAYER_NV_optimus=NVIDIA_only
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw # Cấp quyền hiển thị đồ họa
       - ${XAUTHORITY:-${HOME}/.Xauthority}:/root/.Xauthority:ro
       - .:/workspace/ros2_ws             # Đồng bộ mã nguồn theo thời gian thực
     devices:
-      - /dev/dri:/dev/dri      # <--- QUAN TRỌNG: Cấp quyền truy cập thẳng vào Card AMD/Intel
+      - /dev/dri:/dev/dri      # Cấp DRM render nodes cho OpenGL/Vulkan trên hệ hybrid
     command: tail -f /dev/null           # Giữ container chạy ngầm

@@ -14,6 +14,9 @@ done
 # Chỉ cần đổi dòng này để thay world Gazebo.
 # Các world có sẵn trong PX4: default | baylands | lawn | sonoma_raceway | ...
 GZ_WORLD=default
+VIRTUAL_WALL_ENABLED=1
+VIRTUAL_WALL_POSE="40 25 1 0 0 0"
+VIRTUAL_WALL_SIZE="0.3 30.0 2.0"
 
 # ── Dọn dẹp tiến trình cũ ─────────────────────────────────────────────────────
 pkill -9 -x px4             2>/dev/null || true
@@ -32,6 +35,7 @@ trap '
     pkill -9 -f "mavlink_proxy" 2>/dev/null
     sleep 1
     rm -f /tmp/uav_swarm_server.config
+    rm -f /tmp/uav_swarm_*_virtual_wall.sdf
     rm -rf "$BUILD_PATH/instance_0" "$BUILD_PATH/instance_1" "$BUILD_PATH/instance_2"
     exit
 ' SIGINT SIGTERM
@@ -76,18 +80,76 @@ sleep 2  # proxy must bind its UDP ports before PX4 starts and picks a partner p
 # ── Bước 2/4: Gazebo ──────────────────────────────────────────────────────────
 echo "🌍 [2/4] Gazebo server..."
 export GZ_SIM_RESOURCE_PATH=$PX4_PATH/Tools/simulation/gz/models:$PX4_PATH/Tools/simulation/gz/worlds
-export LIBGL_ALWAYS_SOFTWARE=1
-export GALLIUM_DRIVER=llvmpipe
-export MESA_GL_VERSION_OVERRIDE=3.3
-export MESA_GLSL_VERSION_OVERRIDE=330
+# Prefer the discrete NVIDIA GPU on PRIME / hybrid graphics systems.
+export __NV_PRIME_RENDER_OFFLOAD=${__NV_PRIME_RENDER_OFFLOAD:-1}
+export __GLX_VENDOR_LIBRARY_NAME=${__GLX_VENDOR_LIBRARY_NAME:-nvidia}
+export __VK_LAYER_NV_optimus=${__VK_LAYER_NV_optimus:-NVIDIA_only}
+export NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+export NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-all}
+unset LIBGL_ALWAYS_SOFTWARE
+unset GALLIUM_DRIVER
+unset MESA_GL_VERSION_OVERRIDE
+unset MESA_GLSL_VERSION_OVERRIDE
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi --query-gpu=name,driver_version --format=csv,noheader > /tmp/uav_swarm_nvidia_gpu.log 2>&1 || true
+fi
 
 CUSTOM_SERVER_CONFIG=/tmp/uav_swarm_server.config
 grep -v 'OpticalFlow\|GstCamera' $PX4_PATH/Tools/simulation/gz/server.config \
     > $CUSTOM_SERVER_CONFIG
 export GZ_SIM_SERVER_CONFIG_PATH=$CUSTOM_SERVER_CONFIG
 
+WORLD_PATH=$PX4_PATH/Tools/simulation/gz/worlds/${GZ_WORLD}.sdf
+if [ "$VIRTUAL_WALL_ENABLED" = "1" ]; then
+    VIRTUAL_WORLD_PATH=/tmp/uav_swarm_${GZ_WORLD}_virtual_wall.sdf
+    python3 - "$WORLD_PATH" "$VIRTUAL_WORLD_PATH" "$VIRTUAL_WALL_POSE" "$VIRTUAL_WALL_SIZE" <<'PY'
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dst = Path(sys.argv[2])
+pose = sys.argv[3]
+size = sys.argv[4]
+
+world = src.read_text()
+wall = f"""
+    <model name="virtual_wall">
+      <static>true</static>
+      <pose>{pose}</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>{size}</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>{size}</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+"""
+
+if "name=\"virtual_wall\"" not in world:
+    world = world.replace("</world>", f"{wall}\n  </world>", 1)
+dst.write_text(world)
+PY
+    WORLD_PATH=$VIRTUAL_WORLD_PATH
+    echo "🧱 Virtual wall enabled: pose=[$VIRTUAL_WALL_POSE], size=[$VIRTUAL_WALL_SIZE]"
+fi
+
 gz sim -s -r --headless-rendering \
-    $PX4_PATH/Tools/simulation/gz/worlds/${GZ_WORLD}.sdf 2>/dev/null &
+    $WORLD_PATH 2>/dev/null &
 GZ_PID=$!
 
 if [ $SHOW_GUI -eq 1 ]; then
@@ -96,9 +158,7 @@ if [ $SHOW_GUI -eq 1 ]; then
     _dnum="${DISPLAY##*:}"; _dnum="${_dnum%%.*}"
     if [ -S "/tmp/.X11-unix/X${_dnum}" ]; then
         echo "🖥️  Gazebo GUI..."
-        # Strip ROS2 vendor libs so system OGRE is used. Use ogre (v1/GLX) not
-        # ogre2 (EGL) — ogre2 hardcodes eglGetPlatformDevice which crashes under
-        # software rendering in Docker when the GPU driver is unavailable.
+        # Strip ROS2 vendor libs so system OGRE is used with the NVIDIA GLX stack.
         _clean_ld=$(echo "$LD_LIBRARY_PATH" | tr ':' '\n' | grep -v '/opt/ros' | tr '\n' ':')
         LD_LIBRARY_PATH="$_clean_ld" gz sim -g --render-engine ogre > /tmp/gz_gui.log 2>&1 &
     else

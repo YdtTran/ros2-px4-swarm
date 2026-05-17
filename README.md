@@ -18,9 +18,108 @@ ROS 2 Node (px4_swarm)
 ```
 
 **Thuật toán:**
-- **A\*** — lập kế hoạch đường đi toàn cục trên lưới 2D
-- **Leader-Follower** — giữ đội hình V-shape, follower bám theo leader
-- **ORCA** — tránh va chạm thời gian thực giữa các UAV
+- **PX4 runtime hiện tại** — bay trực tiếp từ A đến B bằng một waypoint đích, giữ đội hình bằng Leader-Follower và chỉnh vận tốc bằng ORCA.
+- **A\*** — đã có trong package cho node mô phỏng/RViz, nhưng chưa được nối vào `px4_swarm_node.py` để sinh đường bay PX4 runtime.
+- **Leader-Follower** — giữ đội hình V-shape, follower bám theo leader.
+- **ORCA** — tránh va chạm cục bộ theo thời gian thực giữa các UAV và vật cản polygon tĩnh đã khai báo.
+
+### Pipeline thuật toán UAV-swarm
+
+#### Pipeline PX4 runtime hiện tại
+
+`px4_swarm_node.py` điều khiển PX4 theo vòng kín: vị trí thật/ước lượng được PX4 publish về ROS 2, node tính vận tốc mong muốn, ORCA chỉnh thành vận tốc an toàn, rồi node gửi `TrajectorySetpoint` ngược lại cho PX4.
+
+```mermaid
+flowchart TD
+    A[PX4 / Gazebo SITL\nEKF + vehicle dynamics] -->|VehicleLocalPosition + VehicleStatus| B[ROS 2 px4_swarm_node\nCập nhật x,y,z ENU và trạng thái bay]
+    B --> C{State machine}
+    C -->|PREFLIGHT / ARMING| D[Publish OFFBOARD + ARM commands]
+    C -->|TAKEOFF| E[Velocity Z lên TARGET_ALT\nXY = 0]
+    C -->|Tất cả UAV FLYING| F[Path hiện tại: _path = POINT_B\nKhông chạy A* trong PX4 node]
+    F --> G[Leader-Follower Formation\nLeader bay tới waypoint\nFollowers bám offset đội hình V]
+    G -->|preferred velocity từng UAV| H[ORCA / RVO2 Collision Avoidance\nInput: vị trí UAV, preferred velocity, radius, virtual wall]
+    H -->|safe velocity| I[Publish TrajectorySetpoint\nXY velocity ENU -> NED\nZ hold TARGET_ALT]
+    I --> A
+    D --> A
+    E --> A
+```
+
+Tóm tắt dạng tuyến tính:
+
+```text
+PX4 local position feedback
+        ↓
+Cập nhật trạng thái UAV trong node
+        ↓
+State machine: PREFLIGHT → ARMING → TAKEOFF → FLYING
+        ↓
+Direct waypoint: POINT_B
+        ↓
+Leader-Follower tạo preferred velocity
+        ↓
+ORCA chỉnh velocity để tránh UAV khác + virtual wall
+        ↓
+PX4 TrajectorySetpoint velocity
+        ↓
+Drone bay trong Gazebo/PX4
+        ↓
+PX4 publish vị trí mới và lặp lại
+```
+
+#### Pipeline thuật toán đầy đủ mong muốn
+
+Phần A* đã tồn tại trong package, nhưng để PX4 runtime né vật cản toàn cục tốt hơn thì cần nối A* vào trước tầng formation để thay `_path = [POINT_B]` bằng danh sách waypoint quanh vật cản.
+
+```text
+Occupancy grid / static map
+        ↓
+A* Global Planner
+        ↓
+Waypoints tránh vật cản toàn cục
+        ↓
+Leader-Follower Formation
+        ↓
+ORCA tránh va chạm cục bộ
+        ↓
+PX4 Velocity Control
+        ↓
+UAV motion + local position feedback
+```
+
+> Nói ngắn gọn: bản PX4 runtime hiện tại là **điểm B đã biết trước → bay trực tiếp → giữ đội hình → ORCA né cục bộ → PX4**, chưa phải pipeline **A* → waypoint toàn cục → formation → ORCA → PX4**.
+
+#### Input và output của framework
+
+Ở runtime PX4 hiện tại, framework không nhận lệnh joystick hay danh sách waypoint động từ người dùng. Input chính là cấu hình mission trong code, feedback trạng thái từ PX4, và cấu hình vật cản tĩnh cho ORCA. Output chính là các ROS 2 `px4_msgs` gửi sang PX4 để arm, bật OFFBOARD và điều khiển vận tốc.
+
+| Tầng | Input | Output | Ý nghĩa |
+|------|-------|--------|---------|
+| Mission/config | `NUM_UAVS`, `POINT_A_ENU`, `POINT_B_ENU`, `TARGET_ALT`, `MAX_SPEED`, `GRID_RES`, `CTRL_RATE`, `VIRTUAL_WALL_*` | Tham số nhiệm vụ và tham số điều khiển | Xác định số UAV, điểm đến, độ cao, giới hạn tốc độ và vật cản tĩnh đã biết trước. |
+| PX4 feedback | `VehicleLocalPosition`, `VehicleStatus` từ từng namespace PX4 | State nội bộ `uav.x`, `uav.y`, `uav.z`, `armed`, `nav_state`, `preflight_pass` | Đây là input đo/ước lượng để node biết UAV đang ở đâu và có sẵn sàng bay không. |
+| State machine | State nội bộ UAV + preflight/arming/offboard status | Lệnh `VehicleCommand` và velocity hover/takeoff | Chuyển UAV qua `PREFLIGHT → ARMING → TAKEOFF → FLYING → ARRIVED`. |
+| Path/goal | Runtime hiện tại: `_path = [POINT_B]` | Waypoint hiện tại cho leader | Leader chỉ bám điểm B; A* chưa sinh waypoint cho PX4 runtime. |
+| Leader-Follower | Vị trí leader/follower + waypoint + offset đội hình V | Preferred velocity `(vx, vy)` cho từng UAV | Tạo vận tốc mong muốn để leader đi tới đích và followers giữ đội hình. |
+| ORCA/RVO2 | Vị trí UAV, preferred velocity, bán kính an toàn, virtual wall polygon | Safe velocity `(vx, vy)` cho từng UAV | Chỉnh vận tốc mong muốn thành vận tốc cục bộ an toàn hơn. |
+| PX4 command output | Safe velocity ENU + `TARGET_ALT` | `TrajectorySetpoint`, `OffboardControlMode`, `VehicleCommand` | Gửi lệnh velocity XY, giữ độ cao Z, arm và bật OFFBOARD cho PX4. |
+| Mô phỏng/vehicle output | PX4 nhận setpoint | UAV di chuyển trong Gazebo/SITL, rồi publish feedback mới | Đây là output vật lý/hiển thị của framework: bầy UAV bay, giữ đội hình và né cục bộ. |
+
+Tóm tắt ngắn gọn:
+
+```text
+INPUT của framework
+  = mission config trong code
+  + PX4 feedback: vị trí/trạng thái từng UAV
+  + obstacle polygon tĩnh cho ORCA
+
+OUTPUT của thuật toán
+  = safe velocity cho từng UAV
+
+OUTPUT của ROS 2/PX4 interface
+  = OffboardControlMode + VehicleCommand + TrajectorySetpoint
+
+OUTPUT cuối cùng
+  = UAV bay trong Gazebo/PX4, sau đó PX4 feedback vị trí mới để đóng vòng lặp
+```
 
 ---
 
